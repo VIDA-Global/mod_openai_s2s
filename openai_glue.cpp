@@ -122,7 +122,7 @@ namespace {
           // Decode the base64 audio data to raw 24k pcm
           std::string rawData = drachtio::base64_decode(audioData);
 
-          //switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "Got %ld bytes of 24k pcm audio.\n", rawData.size());
+          switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "Got %ld bytes of 24k pcm audio.\n", rawData.size());
 
           size_t dataSize = rawData.size();
           size_t processed = 0;
@@ -153,9 +153,9 @@ namespace {
               output.data(),
               &out_len);
 
-            //switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "Processed %ld input samples to %ld output samples.\n", in_len, out_len);
+            switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "Processed %ld input samples to %ld output samples.\n", in_len, out_len);
 
-            //writeRawAudioToFile(reinterpret_cast<const uint8_t*>(output.data()), out_len * sizeof(int16_t));
+            writeRawAudioToFile(reinterpret_cast<const uint8_t*>(output.data()), out_len * sizeof(int16_t));
 
             // at this point we need to grab the session mutex and push the 8k samples into the circular buffer
             size_t out_size_bytes = out_len * 2;
@@ -295,15 +295,19 @@ namespace {
                    * and clear any buffered audio.  Furthermore, any stray audio that comes in
                    * should be ignored until we get input_audio_buffer.committed
                    */
+                  switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_DEBUG, "caller started speaking\n");
                   if (tech_pvt->asssistant_is_speaking) {
+                    switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_DEBUG, "caller interrupted assistant\n");
                     handleInterruption(tech_pvt, session);
                   }
                   tech_pvt->user_is_speaking = true;
                 }
                 else if (0 == strcmp(type, "input_audio_buffer.speech_stopped")) {
+                  switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_DEBUG, "caller stopped speaking\n");
                   tech_pvt-> user_is_speaking = false;
                 }
                 else if (0 == strcmp(type, "input_audio_buffer.committed")) {
+                  switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_DEBUG, "caller audio committed\n");
                 }
                 else if (0 == strcmp(type, "response_audio.done")) {
                   forward = false;
