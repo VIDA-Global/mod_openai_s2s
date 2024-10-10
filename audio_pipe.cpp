@@ -38,7 +38,6 @@ namespace {
 int AudioPipe::lws_callback(struct lws *wsi, 
   enum lws_callback_reasons reason,
   void *user, void *in, size_t len) {
-  switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "AudioPipe::lws_service_thread Callback Reason: %d, wsi: %p\n", reason, wsi);
 
   struct AudioPipe::lws_per_vhost_data *vhd = 
     (struct AudioPipe::lws_per_vhost_data *) lws_protocol_vh_priv_get(lws_get_vhost(wsi), lws_get_protocol(wsi));
@@ -104,17 +103,6 @@ int AudioPipe::lws_callback(struct lws *wsi,
         AudioPipe* ap = findAndRemovePendingConnect(wsi);
         int rc = lws_http_client_http_response(wsi);
         switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "AudioPipe::lws_service_thread LWS_CALLBACK_CLIENT_CONNECTION_ERROR: %s, response status %d\n", in ? (char *)in : "(null)", rc); 
-
-        int error = 0;
-        socklen_t len = sizeof(error);
-        if (getsockopt(lws_get_socket_fd(wsi), SOL_SOCKET, SO_ERROR, &error, &len) < 0) {
-          switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "AudioPipe::lws_service_thread getsockopt failed: %s (errno: %d)\n", strerror(errno), errno);
-        }
-
-        if (error != 0) {
-          switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "AudioPipe::lws_service_thread Socket error detected: %s (errno: %d)\n", strerror(error), error);
-        }
-
         if (ap) {
           ap->m_state = LWS_CLIENT_FAILED;
           ap->m_callback(ap->m_uuid.c_str(),  ap->m_bugname.c_str(), openai_s2s::AudioPipe::CONNECT_FAIL, (char *) in);
@@ -148,10 +136,6 @@ int AudioPipe::lws_callback(struct lws *wsi,
           switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "AudioPipe::lws_service_thread LWS_CALLBACK_CLIENT_CLOSED %s unable to find wsi %p..\n", ap->m_uuid.c_str(), wsi); 
           return 0;
         }
-        
-        // Log detailed information when the socket is closed
-        switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_INFO, "%s Socket closed in LWS_CALLBACK_CLIENT_CLOSED, state: %d, wsi: %p\n", ap->m_uuid.c_str(), ap->m_state, wsi);
-
         if (ap->m_state == LWS_CLIENT_DISCONNECTING) {
           // closed by us
 
@@ -187,11 +171,17 @@ int AudioPipe::lws_callback(struct lws *wsi,
           return 0;
         }
 
+        constexpr size_t INITIAL_BUFFER_SIZE = 128 * 1024; // Define an initial buffer size of 128 KB
+
         if (lws_is_first_fragment(wsi)) {
-          // allocate a buffer for the entire chunk of memory needed
           assert(nullptr == ap->m_recv_buf);
-          ap->m_recv_buf_len = len + lws_remaining_packet_payload(wsi);
+          // Allocate an initial buffer size large enough to handle typical PCM16 audio data comfortably
+          ap->m_recv_buf_len = std::max(len + lws_remaining_packet_payload(wsi), INITIAL_BUFFER_SIZE);
           ap->m_recv_buf = (uint8_t*) malloc(ap->m_recv_buf_len);
+          if (nullptr == ap->m_recv_buf) {
+            switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "Failed to allocate initial receive buffer\n");
+            return -1; // Handle allocation failure gracefully
+          }
           ap->m_recv_buf_ptr = ap->m_recv_buf;
         }
 
@@ -241,8 +231,6 @@ int AudioPipe::lws_callback(struct lws *wsi,
           switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "AudioPipe::lws_service_thread LWS_CALLBACK_CLIENT_WRITEABLE %s unable to find wsi %p..\n", ap->m_uuid.c_str(), wsi); 
           return 0;
         }
-
-        switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "AudioPipe::lws_service_thread LWS_CALLBACK_CLIENT_WRITEABLE, current state: %d, wsi: %p\n", ap->m_state, wsi);
 
         // check for text frames to send
         {
@@ -491,7 +479,7 @@ bool AudioPipe::lws_service_thread() {
 
 void AudioPipe::initialize(int loglevel, log_emit_function logger) {
 
-  //lws_set_log_level(loglevel, logger);
+  lws_set_log_level(loglevel, logger);
 
   switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_NOTICE, "AudioPipe::initialize starting\n"); 
   std::lock_guard<std::mutex> lock(mapMutex);
