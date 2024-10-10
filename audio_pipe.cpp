@@ -259,35 +259,32 @@ int AudioPipe::lws_callback(struct lws *wsi,
           return -1;
         }
 
-        // Check for audio packets
+        // check for audio packets
         {
           std::lock_guard<std::mutex> lk(ap->m_audio_mutex);
 
-          // Send audio in chunks of 100ms since OpenAI expects consistent, complete chunks
+          // let's send in chunks of 100ms audio since I doubt openai wants faster: 5 packets at 480 bytes each (24khz sampling)
           if (ap->m_audio_buffer_write_offset > LWS_PRE) {
             size_t datalen = ap->m_audio_buffer_write_offset - LWS_PRE;
-
-            // Make sure we're sending 100ms worth of audio, which should be 2400 bytes at 24kHz
-            if (datalen >= 2400) {              
-              switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_INFO, "Sending audio packet with %lu bytes to OpenAI..\n", datalen);
-
+      
+            //if (datalen >= MIN_AUDIO_BYTES) {
               std::ostringstream oss;
-              oss << "{\"type\":\"input_audio_buffer.append\",\"audio\":\"" 
-                  << drachtio::base64_encode((unsigned char const *) ap->m_audio_buffer + LWS_PRE, 2400) << "\"}";
+
+              //TMP!!
+              //writeRawAudioToFile(ap->m_audio_buffer + LWS_PRE, datalen);
+
+              oss << "{\"type\":\"input_audio_buffer.append\",\"audio\":\"" << drachtio::base64_encode((unsigned char const *) ap->m_audio_buffer + LWS_PRE, datalen) << "\"}";
               std::string result = oss.str();
               uint8_t buf[result.length() + LWS_PRE];
-              memcpy(buf + LWS_PRE, result.c_str(), result.length());
+              memcpy(buf + LWS_PRE,result.c_str(), result.length());
               int n = result.length();
               int m = lws_write(wsi, buf + LWS_PRE, n, LWS_WRITE_TEXT);
-
               if (m < n) {
-                switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_INFO, "AudioPipe::lws_service_thread LWS_CALLBACK_CLIENT_WRITEABLE attempted to send %lu bytes, only sent %d, wsi %p..\n", 
+                switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_INFO, "AudioPipe::lws_service_thread LWS_CALLBACK_CLIENT_WRITEABLE attemped to send %lu bytes only sent %d wsi %p..\n", 
                   n, m, wsi); 
               }
-
-              // Reset the write offset to prepare for the next chunk
               ap->m_audio_buffer_write_offset = LWS_PRE;
-            }
+            //}
           }
         }
 
