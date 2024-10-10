@@ -268,12 +268,10 @@ int AudioPipe::lws_callback(struct lws *wsi,
             size_t datalen = ap->m_audio_buffer_write_offset - LWS_PRE;
 
             // Make sure we're sending 100ms worth of audio, which should be 2400 bytes at 24kHz
-            if (datalen >= 2400) {
+            if (datalen >= 2400) {              
+              switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_INFO, "Sending audio packet with %lu bytes to OpenAI..\n", datalen);
+
               std::ostringstream oss;
-
-              // TMP!! (optional for debugging)
-              // writeRawAudioToFile(ap->m_audio_buffer + LWS_PRE, datalen);
-
               oss << "{\"type\":\"input_audio_buffer.append\",\"audio\":\"" 
                   << drachtio::base64_encode((unsigned char const *) ap->m_audio_buffer + LWS_PRE, 2400) << "\"}";
               std::string result = oss.str();
