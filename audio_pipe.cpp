@@ -263,6 +263,29 @@ int AudioPipe::lws_callback(struct lws *wsi,
         {
           std::lock_guard<std::mutex> lk(ap->m_audio_mutex);
 
+          // If there's no data in the buffer, we'll send silence
+          if (ap->m_audio_buffer_write_offset <= LWS_PRE) {
+            // Define a 20 ms chunk of silence at 24kHz PCM16 (assuming mono audio)
+            constexpr size_t SILENCE_CHUNK_SIZE = 480; // 20ms of PCM16 at 24kHz mono (480 bytes)
+            uint8_t silent_audio[SILENCE_CHUNK_SIZE] = {0}; // This is PCM16 silence
+
+            // Create a JSON message with the silent audio encoded in base64
+            std::ostringstream oss;
+            oss << "{\"type\":\"input_audio_buffer.append\",\"audio\":\"" << drachtio::base64_encode(silent_audio, SILENCE_CHUNK_SIZE) << "\"}";
+            std::string result = oss.str();
+
+            uint8_t buf[result.length() + LWS_PRE];
+            memcpy(buf + LWS_PRE, result.c_str(), result.length());
+            int n = result.length();
+            int m = lws_write(wsi, buf + LWS_PRE, n, LWS_WRITE_TEXT);
+
+            if (m < n) {
+              switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_INFO, "AudioPipe::lws_service_thread LWS_CALLBACK_CLIENT_WRITEABLE attempted to send %lu bytes, only sent %d, wsi %p..\n", n, m, wsi);
+            }
+            // Return so that only one write happens per writeable event
+            return 0;
+          }
+      
           // let's send in chunks of 100ms audio since I doubt openai wants faster: 5 packets at 480 bytes each (24khz sampling)
           if (ap->m_audio_buffer_write_offset > LWS_PRE) {
             size_t datalen = ap->m_audio_buffer_write_offset - LWS_PRE;
