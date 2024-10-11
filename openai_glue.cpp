@@ -705,7 +705,7 @@ extern "C" {
         }
         switch_core_media_bug_set_write_replace_frame(bug, rframe);
       }
-
+    }
     return SWITCH_TRUE;
   }
 
