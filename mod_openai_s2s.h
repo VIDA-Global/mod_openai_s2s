@@ -25,8 +25,7 @@ typedef void (*responseHandler_t)(switch_core_session_t* session, const char* ev
 typedef enum {
     SESSION_STATE_NONE = 0,
     SESSION_STATE_WS_CONNECTED,
-    SESSION_STATE_CONVERSATION_STARTED,   
-    SESSION_STATE_CONVERSATION_ENDED
+    SESSION_STATE_CONVERSATION_STARTED
 } SessionState_t;
 
 

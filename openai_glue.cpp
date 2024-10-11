@@ -24,6 +24,7 @@
 
 
 #include <boost/circular_buffer.hpp>
+#include <boost/algorithm/string/replace.hpp>
 
 #include "mod_openai_s2s.h"
 #include "simple_buffer.h"
@@ -51,10 +52,43 @@ namespace {
 
   void writeRawAudioToFile(const uint8_t* buffer, size_t datalen) {
     if (audio_file.is_open()) {
-        audio_file.write(reinterpret_cast<const char*>(buffer), datalen);
+      audio_file.write(reinterpret_cast<const char*>(buffer), datalen);
     } else {
-        switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "Failed to open raw_audio_data.bin for writing.\n");
+      switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "Failed to open raw_audio_data.bin for writing.\n");
     }
+  }
+
+  // Function to escape newlines, quotes, and backslashes in a string (for JSON) using Boost
+  std::string escape_json_content(const std::string& input) {
+    std::string escaped = input;      
+    boost::replace_all(escaped, "\\", "\\\\"); // Escape backslashes first
+    boost::replace_all(escaped, "\"", "\\\""); // Escape double quotes
+    boost::replace_all(escaped, "\n", "\\n");  // Escape newlines
+    return escaped;
+  }
+
+  // Function to find the end of a JSON string value, handling escaped quotes
+  size_t find_closing_quote(const std::string& json_input, size_t start_pos) {
+    switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "instructions content starting at %d: %s\n", start_pos, json_input.c_str() + start_pos);
+    bool escape = false;
+    for (size_t i = start_pos; i < json_input.length(); ++i) {
+      if (escape) {
+        escape = false;  // Skip the escaped character
+        switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "skipping escaped char at %d\n", i);
+
+      } else if (json_input[i] == '\\') {
+        switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "found backslash at %d, setting escaped mode\n", i);
+        escape = true;  // Set escape mode for the next character
+      } else if (json_input[i] == '"') {
+        // Ensure it's an unescaped quote before returning
+        switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "found quote at %d\n", i);
+        if (!escape) {
+          switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "found final quote at %d, returning\n", i);
+          return i;  // Unescaped quote found, return its position
+        }
+      }
+    }
+    return std::string::npos;  // No closing quote found
   }
 
   class AudioPlayer {
@@ -122,7 +156,7 @@ namespace {
           // Decode the base64 audio data to raw 24k pcm
           std::string rawData = drachtio::base64_decode(audioData);
 
-          switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "Got %ld bytes of 24k pcm audio.\n", rawData.size());
+          //switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "Got %ld bytes of 24k pcm audio.\n", rawData.size());
 
           size_t dataSize = rawData.size();
           size_t processed = 0;
@@ -153,9 +187,9 @@ namespace {
               output.data(),
               &out_len);
 
-            switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "Processed %ld input samples to %ld output samples.\n", in_len, out_len);
+            //switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "Processed %ld input samples to %ld output samples.\n", in_len, out_len);
 
-            writeRawAudioToFile(reinterpret_cast<const uint8_t*>(output.data()), out_len * sizeof(int16_t));
+            //writeRawAudioToFile(reinterpret_cast<const uint8_t*>(output.data()), out_len * sizeof(int16_t));
 
             // at this point we need to grab the session mutex and push the 8k samples into the circular buffer
             size_t out_size_bytes = out_len * 2;
@@ -295,21 +329,17 @@ namespace {
                    * and clear any buffered audio.  Furthermore, any stray audio that comes in
                    * should be ignored until we get input_audio_buffer.committed
                    */
-                  switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_DEBUG, "caller started speaking\n");
                   if (tech_pvt->asssistant_is_speaking) {
-                    switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_DEBUG, "caller interrupted assistant\n");
                     handleInterruption(tech_pvt, session);
                   }
                   tech_pvt->user_is_speaking = true;
                 }
                 else if (0 == strcmp(type, "input_audio_buffer.speech_stopped")) {
-                  switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_DEBUG, "caller stopped speaking\n");
                   tech_pvt-> user_is_speaking = false;
                 }
                 else if (0 == strcmp(type, "input_audio_buffer.committed")) {
-                  switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_DEBUG, "caller audio committed\n");
                 }
-                else if (0 == strcmp(type, "response_audio.done")) {
+                else if (0 == strcmp(type, "response.audio.done")) {
                   forward = false;
                   tech_pvt->asssistant_is_speaking = false;
                   switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_DEBUG, "assistant stopped sending audio\n");
@@ -411,12 +441,64 @@ namespace {
 
 
 extern "C" {
+
+  // utility function to properly escape "instructions" property in response.create
+  char* process_json_string(const char* str) {
+    std::string json_input(str);  // Convert C string to std::string
+    const std::string instructions_key = "\"instructions\":\"";
+    size_t instructions_start = json_input.find(instructions_key);
+
+    switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "processing %s\n", str);
+
+    if (instructions_start == std::string::npos) {
+      // "instructions" field not found, return original string (copy)
+      switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "instructions not found\n");
+
+      char* result = (char*)malloc(strlen(str) + 1);
+      strcpy(result, str);
+      return result;
+    }
+
+    // Move to the start of the "instructions" value
+    instructions_start += instructions_key.length();
+
+    switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "found instructions at %d\n", instructions_start);
+
+    // Find the closing quote of the instructions value, handling escaped quotes
+    size_t instructions_end = find_closing_quote(json_input, instructions_start);
+    if (instructions_end == std::string::npos) {
+        // Malformed JSON (no closing quote for "instructions"), return the original string
+        char* result = (char*)malloc(strlen(str) + 1);
+        strcpy(result, str);
+        switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "failed to find closing quote\n");
+        return result;
+    }
+
+    // Extract the original instructions value
+    std::string original_instructions = json_input.substr(instructions_start, instructions_end - instructions_start);
+
+    switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "found closing quote at %d\n", instructions_end);
+    switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "extracted %s\n", original_instructions.c_str());
+
+    // Escape the instructions content using Boost
+    std::string escaped_instructions = escape_json_content(original_instructions);
+
+    switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "rebuilt to %s\n", escaped_instructions.c_str());
+
+    // Rebuild the JSON string
+    std::string new_json = json_input.substr(0, instructions_start) + escaped_instructions + json_input.substr(instructions_end);
+
+    // Convert std::string back to char* and return
+    char* result = (char*)malloc(new_json.size() + 1);
+    strcpy(result, new_json.c_str());
+    return result;
+  }
+
   switch_status_t openai_s2s_init() {
     switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_NOTICE, "mod_speechmatics_transcribe: audio buffer (in secs):    %d secs\n", nAudioBufferSecs);
  
-    //int logs = LLL_ERR | LLL_WARN | LLL_NOTICE;
+    int logs = LLL_ERR | LLL_WARN | LLL_NOTICE;
     // | LLL_INFO | LLL_PARSER | LLL_HEADER | LLL_EXT | LLL_CLIENT  | LLL_LATENCY | LLL_DEBUG ;
-    int logs = LLL_ERR | LLL_WARN | LLL_NOTICE | LLL_INFO | LLL_PARSER | LLL_HEADER | LLL_EXT | LLL_CLIENT  | LLL_LATENCY | LLL_DEBUG ;
     
     openai_s2s::AudioPipe::initialize(logs, lws_logger);
 		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_NOTICE, "AudioPipe::initialize completed\n");
@@ -473,7 +555,7 @@ extern "C" {
     switch_channel_t *channel = switch_core_session_get_channel(session);
     switch_media_bug_t *bug = (switch_media_bug_t*) switch_channel_get_private(channel, bugname);
     if (!bug) {
-      switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_ERROR, "openai_s2s_session_update failed because no bug\n");
+      switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_ERROR, "openai_s2s_send_client_event failed because no bug\n");
       return SWITCH_STATUS_FALSE;
     }
     private_t* tech_pvt = (private_t*) switch_core_media_bug_get_user_data(bug);
@@ -513,10 +595,13 @@ extern "C" {
 
       if (nullptr == json_string) {
         json_string = cJSON_PrintUnformatted(json);
+        if (0 == strcmp(type, "response.create")) {
+          switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_DEBUG, "openai_s2s_send_client_event sending response.create %s\n", json_string);
+        }
       }
 
       if (!json_string) {
-        switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_ERROR, "openai_s2s_session_update failed to serialize json\n");
+        switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_ERROR, "openai_s2s_send_client_event failed to serialize json\n");
         return SWITCH_STATUS_FALSE;
       }
       pAudioPipe->bufferForSending(json_string);
@@ -569,14 +654,22 @@ extern "C" {
     if (switch_mutex_trylock(tech_pvt->mutex) == SWITCH_STATUS_SUCCESS) {
       CircularBuffer_t *cBuffer = (CircularBuffer_t *) tech_pvt->playoutBuffer;
 
-      // do we need to interrupt the assistant?
+      // Do we need to interrupt the assistant?
       if (tech_pvt->process_interrupt) {
         tech_pvt->process_interrupt = false;
         cBuffer->clear();
         openai_s2s::AudioPipe *pAudioPipe = static_cast<openai_s2s::AudioPipe *>(tech_pvt->pAudioPipe);
         pAudioPipe->bufferForSending("{\"type\": \"response.cancel\"}");
 
-        //TODO: send playout complete event due to interrupt
+        // Retrieve the session using the sessionId in tech_pvt
+        switch_core_session_t *session = switch_core_session_locate(tech_pvt->sessionId);
+        if (session) {
+          // Send playout complete event due to interrupt
+          tech_pvt->responseHandler(session, OAIS2S_EVENT_SERVER, 
+            "{\"type\": \"output_audio.playback_stopped\", \"completion_reason\": \"interrupted\"}", tech_pvt->bugname);
+          // Unlock the session after using it
+          switch_core_session_rwunlock(session);
+        }
       }
 
       if (cBuffer->size() > 0) {
@@ -590,11 +683,17 @@ extern "C" {
         memset(data, 0, sizeof(data));
         int samplesToCopy = std::min(static_cast<int>(cBuffer->size()), static_cast<int>(rframe->samples));
 
-        //TODO: if samplesToCopy < rframe->samples, we should send playout complete event
 
         // copy the data and remove from the buffer
         std::copy_n(cBuffer->begin(), samplesToCopy, data);
         cBuffer->erase(cBuffer->begin(), cBuffer->begin() + samplesToCopy);
+
+        if (cBuffer->size() == 0) {
+          // send playout complete event due to completion
+          tech_pvt->responseHandler(session, OAIS2S_EVENT_SERVER, 
+            "{\"type\": \"output_audio.playback_stopped\": \"completion_reason\": \"completed\"}", tech_pvt->bugname);
+
+        }
 
         if (samplesToCopy > 0) {
           vector_add(fp, data, rframe->samples);
@@ -613,15 +712,14 @@ extern "C" {
     size_t inuse = 0;
     bool dirty = false;
     char *p = (char *) "{\"msg\": \"buffer overrun\"}";
-    char *keep_alive = (char *) "{\"type\": \"KeepAlive\"}";
+
+    if (!tech_pvt) return SWITCH_TRUE;
 
     /* dont send audio until initial response.created is received */
     if (tech_pvt->state != SESSION_STATE_CONVERSATION_STARTED) {
       return SWITCH_TRUE;
     }
 
-    if (!tech_pvt) return SWITCH_TRUE;
-        
     if (switch_mutex_trylock(tech_pvt->mutex) == SWITCH_STATUS_SUCCESS) {
       if (!tech_pvt->pAudioPipe) {
         switch_mutex_unlock(tech_pvt->mutex);

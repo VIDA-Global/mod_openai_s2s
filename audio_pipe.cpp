@@ -12,7 +12,12 @@
 /* discard incoming text messages over the socket that are longer than this */
 #define MAX_RECV_BUF_SIZE (65 * 1024 * 10)
 #define RECV_BUF_REALLOC_SIZE (8 * 1024)
-#define MIN_AUDIO_BYTES (2400)
+
+// lets send audio every 60ms
+// at 24k samples/sec, with 20 ms packetization, we send 480 samples every 20 ms
+// each sample is 2 bytes, so 960 bytes every 20 ms
+// 960 * 3 = 2880 bytes every 60 ms
+#define MIN_AUDIO_BYTES (2880)
 
 using namespace openai_s2s;
 
@@ -171,17 +176,11 @@ int AudioPipe::lws_callback(struct lws *wsi,
           return 0;
         }
 
-        constexpr size_t INITIAL_BUFFER_SIZE = 128 * 1024; // Define an initial buffer size of 128 KB
-
         if (lws_is_first_fragment(wsi)) {
+          // allocate a buffer for the entire chunk of memory needed
           assert(nullptr == ap->m_recv_buf);
-          // Allocate an initial buffer size large enough to handle typical PCM16 audio data comfortably
-          ap->m_recv_buf_len = std::max(len + lws_remaining_packet_payload(wsi), INITIAL_BUFFER_SIZE);
+          ap->m_recv_buf_len = len + lws_remaining_packet_payload(wsi);
           ap->m_recv_buf = (uint8_t*) malloc(ap->m_recv_buf_len);
-          if (nullptr == ap->m_recv_buf) {
-            switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "Failed to allocate initial receive buffer\n");
-            return -1; // Handle allocation failure gracefully
-          }
           ap->m_recv_buf_ptr = ap->m_recv_buf;
         }
 
@@ -263,11 +262,10 @@ int AudioPipe::lws_callback(struct lws *wsi,
         {
           std::lock_guard<std::mutex> lk(ap->m_audio_mutex);
 
-          // let's send in chunks of 100ms audio since I doubt openai wants faster: 5 packets at 480 bytes each (24khz sampling)
           if (ap->m_audio_buffer_write_offset > LWS_PRE) {
             size_t datalen = ap->m_audio_buffer_write_offset - LWS_PRE;
       
-            //if (datalen >= MIN_AUDIO_BYTES) {
+            if (datalen >= MIN_AUDIO_BYTES) {
               std::ostringstream oss;
 
               //TMP!!
@@ -284,7 +282,7 @@ int AudioPipe::lws_callback(struct lws *wsi,
                   n, m, wsi); 
               }
               ap->m_audio_buffer_write_offset = LWS_PRE;
-            //}
+            }
           }
         }
 
@@ -479,7 +477,7 @@ bool AudioPipe::lws_service_thread() {
 
 void AudioPipe::initialize(int loglevel, log_emit_function logger) {
 
-  lws_set_log_level(loglevel, logger);
+  //lws_set_log_level(loglevel, logger);
 
   switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_NOTICE, "AudioPipe::initialize starting\n"); 
   std::lock_guard<std::mutex> lock(mapMutex);

@@ -5,6 +5,7 @@
  */
 #include "mod_openai_s2s.h"
 #include "openai_glue.h"
+#include "cmd_parser.h"
 #include <stdio.h>
 #include <stdbool.h>
 
@@ -28,6 +29,49 @@ static bool is_valid_command(const char *cmd) {
   return false;
 }
 
+static void handle_instructions(cJSON *response_obj, switch_core_session_t *session) {
+  cJSON *instructions_item = cJSON_GetObjectItem(response_obj, "instructions");
+  switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_DEBUG, "handle_instructions.\n");
+  if (instructions_item && cJSON_IsString(instructions_item)) {
+    const char *instructions_value = instructions_item->valuestring;
+    
+    if (strncmp(instructions_value, "file://", 7) == 0) {
+      FILE *file = NULL;
+      char file_path[256];
+      strncpy(file_path, instructions_value + 7, 255);
+
+      // Detach the "instructions" property from the response object
+      cJSON_DeleteItemFromObject(response_obj, "instructions");
+
+      switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_DEBUG, "handle_instructions: switching out instructions for file %s\n", file_path);
+
+      // Read the file content
+      file = fopen(file_path, "r");
+      if (file) {
+        char *file_content = NULL;
+        long file_size;
+        fseek(file, 0, SEEK_END);
+        file_size = ftell(file);
+        fseek(file, 0, SEEK_SET);
+
+        file_content = malloc(file_size + 1);
+        if (file_content) {
+          fread(file_content, 1, file_size, file);
+          file_content[file_size] = '\0'; 
+
+          // Add the new instructions property with file content
+          cJSON_AddStringToObject(response_obj, "instructions", file_content);
+
+          // Cleanup
+          free(file_content);
+        }
+        fclose(file);
+      } else {
+          switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_ERROR, "Could not open file: %s\n", file_path);
+      }
+    }
+  }
+}
 
 static void responseHandler(switch_core_session_t* session, 
 	const char* eventName, const char * json, const char* bugname) {
@@ -98,7 +142,7 @@ SWITCH_STANDARD_API(openai_s2s_function)
 
   /* validate command */
 	if (!zstr(cmd) && (mycmd = strdup(cmd))) {
-		argc = switch_separate_string(mycmd, ' ', argv, (sizeof(argv) / sizeof(argv[0])));
+		argc = switch_separate_string_no_cleanup(mycmd, ' ', argv, (sizeof(argv) / sizeof(argv[0])));
 	}
   if (argc < 2 || zstr(argv[1])) {
     switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_ERROR, "Invalid input: Command is required.\n");
@@ -160,13 +204,30 @@ SWITCH_STANDARD_API(openai_s2s_function)
       return openai_s2s_session_delete(lsession, MY_BUG_NAME, 0);
     }
     else if (!strcasecmp(argv[1], "client.event")) {
-      const char* str = argv[2];
+      char* str = argv[2];
+      //switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_DEBUG, "parsed argv[2] as %s.\n", argv[2]);
+
       json = cJSON_Parse(str);
       if (!json) {
-        switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_ERROR, "session.update: failed parsing incoming msg as JSON: %s\n", argv[2]);
+        const char *error_ptr = cJSON_GetErrorPtr();
+        if (error_ptr) {
+          switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_ERROR, "session.update: failed parsing incoming msg as JSON: %s\n", error_ptr);
+        }
+        else {
+          switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_ERROR, "session.update: failed parsing incoming msg as JSON: %s\n",str);
+        }
         status = SWITCH_STATUS_FALSE;
       }
       else {
+        /* response.create supports instructions provided in a local file*/
+        cJSON *type_item = cJSON_GetObjectItem(json, "type");
+        if (type_item && cJSON_IsString(type_item) && strcmp(type_item->valuestring, "response.create") == 0) {
+          cJSON *response_obj = cJSON_GetObjectItem(json, "response");
+          if (response_obj && cJSON_IsObject(response_obj)) {
+            handle_instructions(response_obj, session);
+          }
+        }
+
         status = openai_s2s_send_client_event(lsession, MY_BUG_NAME, json);
         cJSON_Delete(json);
       }

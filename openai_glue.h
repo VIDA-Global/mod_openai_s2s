@@ -1,6 +1,9 @@
 #ifndef __OPENAI_GLUE_H__
 #define __OPENAI_GLUE_H__
 
+/* utility function */
+char* process_json_string(const char* str);
+
 switch_status_t openai_s2s_init();
 switch_status_t openai_s2s_cleanup();
 switch_bool_t openai_s2s_read_frame(switch_core_session_t *session, switch_media_bug_t *bug, void* user_data);
