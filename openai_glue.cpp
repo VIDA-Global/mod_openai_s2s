@@ -683,26 +683,28 @@ extern "C" {
         memset(data, 0, sizeof(data));
         int samplesToCopy = std::min(static_cast<int>(cBuffer->size()), static_cast<int>(rframe->samples));
 
-
-        // copy the data and remove from the buffer
+        // Copy the data and remove it from the buffer
         std::copy_n(cBuffer->begin(), samplesToCopy, data);
         cBuffer->erase(cBuffer->begin(), cBuffer->begin() + samplesToCopy);
 
         if (cBuffer->size() == 0) {
-          // send playout complete event due to completion
-          tech_pvt->responseHandler(session, OAIS2S_EVENT_SERVER, 
-            "{\"type\": \"output_audio.playback_stopped\": \"completion_reason\": \"completed\"}", tech_pvt->bugname);
-
+          // Retrieve the session using the sessionId in tech_pvt
+          switch_core_session_t *session = switch_core_session_locate(tech_pvt->sessionId);
+          if (session) {
+            // Send playout complete event due to completion
+            tech_pvt->responseHandler(session, OAIS2S_EVENT_SERVER, 
+              "{\"type\": \"output_audio.playback_stopped\", \"completion_reason\": \"completed\"}", tech_pvt->bugname);
+            // Unlock the session after using it
+            switch_core_session_rwunlock(session);
+          }
         }
 
         if (samplesToCopy > 0) {
           vector_add(fp, data, rframe->samples);
-           vector_normalize(fp, rframe->samples);
+          vector_normalize(fp, rframe->samples);
         }
-         switch_core_media_bug_set_write_replace_frame(bug, rframe);
+        switch_core_media_bug_set_write_replace_frame(bug, rframe);
       }
-      switch_mutex_unlock(tech_pvt->mutex);
-    }
 
     return SWITCH_TRUE;
   }
